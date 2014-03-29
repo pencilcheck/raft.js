@@ -9,7 +9,8 @@
     "ws": "0.4.x",
     "express": "3.x",
     "es6-shim": "~0.10.1",
-    "faye-websocket": "~0.7.2"
+    "faye-websocket": "~0.7.2",
+    "q": "~1.0.1"
   },
   "engines": {
     "node": "0.10.x",
