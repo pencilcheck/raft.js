@@ -7,10 +7,11 @@
  * 5.4.1, 5.4.2, 5.4.3 [DONE]
  * 5.5 Follower and candidate crashes [DONE]
  * 5.6 Timing and availability [DONE]
- * 6   Cluster membership changes
+ * 6   Cluster membership changes [DONE]
  * 7.  Log compaction
  * 8.  Client interaction
  * 9.  Persistence (client pending requests + logs)
+ * 10. Test all
  */
 
 var q = require('q')
