@@ -17,12 +17,14 @@ var RaftServer      = require('./raft.js'),
     sm              = new STM(),
     socketUrl       = 'ws://localhost:3000/',
     ws              = new WebSocket.Client(socketUrl),
-    raftServer      = new RaftServer(ws, 'http://localhost:' + port, serverList, sm),
+    raftServer      = new RaftServer(ws, 'http://localhost:' + port, null, sm),
     debug           = process.argv[process.argv.indexOf('--debug')+1] || true
 
 if (!debug) {
   console.log = function () {
   }
+} else {
+  console.log('debug mode')
 }
 
 app.use(express.static(__dirname + '/'))
