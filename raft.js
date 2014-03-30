@@ -280,10 +280,12 @@ module.exports = function (socket, ip, initial, sm) {
   this.messageIndex = 0
   this.rpc = function () {
     var destId = arguments[0],
-        args = Array.prototype.slice.call(arguments, 0).slice(2)[0]
+        args = Array.prototype.slice.call(arguments, 0).slice(2)[0],
+        type = args.entries && args.entries.length == 0 ? 'heartbeat' : null
     args.func = arguments[1]
 
-    return this.send(destId, args)
+
+    return this.send(destId, args, type)
   }
 
   this.ack = function (destId, messageIndex, payload) {
@@ -305,11 +307,15 @@ module.exports = function (socket, ip, initial, sm) {
     if (type != 'ack') {
       var dfd = q.defer()
       var ackId = message.src_id.toString() + message.dest_id.toString() + message.messageIndex.toString()
-      console.log('[SEND] ' + message.payload.func + ' (' + message.type + ') to ' + dest + ' with index ' + message.messageIndex + ', ack id (' + ackId + ')')
+      if (type == 'message')
+        console.log('[SEND] ' + Object.values(message.payload) + ' to ' + dest + ' with ack id (' + ackId + ')')
       this.waitingAcks[ackId] = dfd
       setInterval(function () {
         // Resend indefinitely if not receive ack in timeout
-        self.socket.send(JSON.stringify(message))
+        if (self.waitingAcks[ackId]) {
+          console.log('[SEND] failed to receive ack with ack id (' + ackId + ')')
+          self.socket.send(JSON.stringify(message))
+        }
       }, this.ackTimeout)
       return dfd.promise
     }
@@ -391,19 +397,19 @@ module.exports = function (socket, ip, initial, sm) {
       }
 
       if (self.role == 'leader') {
-        function updateCommitIndex(N) {
-          var count = 0
-          Object.keys(self.matchIndex).forEach(function (serverId) {
-            if (self.matchIndex[serverId] >= N) {
-              count += 1
-            }
-          })
+        //function updateCommitIndex(N) {
+          //var count = 0
+          //Object.keys(self.matchIndex).forEach(function (serverId) {
+            //if (self.matchIndex[serverId] >= N) {
+              //count += 1
+            //}
+          //})
 
-          if (count > Object.keys(self.matchIndex).length / 2 && self.log[N].term == self.currentTerm) {
-            self.commitIndex = N
-          }
-        }
-        updateCommitIndex(self.commitIndex + 1)
+          //if (count > Object.keys(self.matchIndex).length / 2 && self.log[N].term == self.currentTerm) {
+            //self.commitIndex = N
+          //}
+        //}
+        //updateCommitIndex(self.commitIndex + 1)
 
         Object.keys(self.nextIndex).forEach(function (serverId) {
           if (self.log.length-1 >= self.nextIndex[serverId])
@@ -426,6 +432,8 @@ module.exports = function (socket, ip, initial, sm) {
     var self = this,
         results = [],
         entries = this.log.slice(index, index+length)
+    console.log(this.log)
+    console.log('commit: ' + index + ', ' + length)
     entries.forEach(function (entry, offset) {
       if (entry.command == 'request') {
         console.log('applying entry to SM')
@@ -452,8 +460,8 @@ module.exports = function (socket, ip, initial, sm) {
         var ackId = data.dest_id.toString() + data.src_id.toString() + data.messageIndex.toString()
         var promise = self.waitingAcks[ackId]
         if (promise) {
-          console.log('[ACK] from ' + data.src_id + ', ack id (' + ackId + ')')
           promise.resolve(data.payload)
+          delete self.waitingAcks[ackId]
         }
       } else {
         self.ack(data.src_id, data.messageIndex, self.respondToRequest(data.payload))
@@ -511,6 +519,8 @@ module.exports = function (socket, ip, initial, sm) {
       return self.replicateToMajority(entries, prevLogIndex)
         .then(function () {
           return self.commit(prevLogIndex+1, entries.length)
+        }, function () {
+          console.error('failed to replicate to majority')
         })
     }
   }
