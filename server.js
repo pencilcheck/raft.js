@@ -18,14 +18,7 @@ var RaftServer      = require('./raft.js'),
     socketUrl       = 'ws://localhost:3000/',
     ws              = new WebSocket.Client(socketUrl),
     raftServer      = new RaftServer(ws, 'http://localhost:' + port, serverList, sm),
-    debug           = process.argv[process.argv.indexOf('--debug')+1] || true
-
-if (!debug) {
-  console.log = function () {
-  }
-} else {
-  console.log('debug mode')
-}
+    debug           = process.argv.indexOf('--debug') > -1 && process.argv[process.argv.indexOf('--debug')+1] || false
 
 app.use(express.static(__dirname + '/'))
 
@@ -36,47 +29,49 @@ function redirectToLeader(res, url) {
   res.redirect(307, url)
 }
 
+app.use(express.bodyParser());
+
 app.post('/', function (req, res) {
   if (raftServer.role == 'leader') {
-    raftServer.serve(req.param('command'), JSON.parse(req.param('data')))
+    raftServer.serve(req.param('command'), req.param('data'))
       .then(function (results) {
         res.send(JSON.stringify(results))
       })
   } else {
-    redirectToLeader(res, raftServer.leader().ip + req.path)
+    redirectToLeader(res, raftServer.leader() + req.path)
   }
 })
 
 app.post('/configure', function (req, res) {
   if (raftServer.role == 'leader') {
-    raftServer.serve('configuration', ['setServers'].concat(JSON.parse(req.param('data'))))
+    raftServer.serve('configuration', ['setServers'].concat(req.param('data')))
       .then(function (result) {
         res.send(JSON.stringify(result))
       })
   } else {
-    redirectToLeader(res, raftServer.leader().ip + req.path)
+    redirectToLeader(res, raftServer.leader() + req.path)
   }
 })
 
 app.post('/configure/add', function (req, res) {
   if (raftServer.role == 'leader') {
-    raftServer.serve('configuration', ['addServers'].concat(JSON.parse(req.param('data'))))
+    raftServer.serve('configuration', ['addServers'].concat(req.param('data')))
       .then(function (result) {
         res.send(JSON.stringify(result))
       })
   } else {
-    redirectToLeader(res, raftServer.leader().ip + req.path)
+    redirectToLeader(res, raftServer.leader() + req.path)
   }
 })
 
 app.delete('/configure', function (req, res) {
   if (raftServer.role == 'leader') {
-    raftServer.serve('configuration', ['removeServers'].concat(JSON.parse(req.param('data'))))
+    raftServer.serve('configuration', ['removeServers'].concat(req.param('data')))
       .then(function (result) {
         res.send(JSON.stringify(result))
       })
   } else {
-    redirectToLeader(res, raftServer.leader().ip + req.path)
+    redirectToLeader(res, raftServer.leader() + req.path)
   }
 })
 
@@ -84,5 +79,13 @@ var server = http.createServer(app)
 server.listen(port)
 
 console.log('http server listening on %d', port)
+
+
+if (!debug) {
+  console.log = function () {
+  }
+} else {
+  console.log('debug mode')
+}
 
 raftServer.start()

@@ -392,7 +392,6 @@ module.exports = function (socket, ip, initial, sm) {
 
       if (self.role == 'leader') {
         function updateCommitIndex(N) {
-          console.log('updateCommitIndex')
           var count = 0
           Object.keys(self.matchIndex).forEach(function (serverId) {
             if (self.matchIndex[serverId] >= N) {
@@ -429,7 +428,8 @@ module.exports = function (socket, ip, initial, sm) {
         entries = this.log.slice(index, index+length)
     entries.forEach(function (entry, offset) {
       if (entry.command == 'request') {
-        results.push(self.sm[entry.data[0]].apply(self, entry.data[1]))
+        console.log('applying entry to SM')
+        results.push(self.sm[entry.data[0]].apply(self.sm, entry.data[1]))
         self.lastApplied = index + offset
       }
     })
@@ -437,9 +437,7 @@ module.exports = function (socket, ip, initial, sm) {
   }
 
   this.leader = function () {
-    this.configuration.servers().find(function (server) {
-      return server == this.leaderId
-    })
+      return this.leaderId
   }
 
   this.start = function () {
@@ -487,7 +485,7 @@ module.exports = function (socket, ip, initial, sm) {
         data: self.configuration.toObject(),
         term: self.currentTerm,
       }]
-      self.log.concat(entries)
+      self.log = self.log.concat(entries)
       self.replicateToMajority(entries, prevLogIndex)
         .then(function () {
           // Now replicate the new configuration
@@ -499,7 +497,7 @@ module.exports = function (socket, ip, initial, sm) {
             term: self.currentTerm,
           }]
           prevLogIndex = self.log.length-1
-          self.log.concat(entries)
+          self.log = self.log.concat(entries)
           self.replicateToMajority(entries, prevLogIndex).then(function () {
             // Step down if the new configuration does not include itself
             if (self.configuration.servers().indexOf(self.id) < 0) {
@@ -509,7 +507,7 @@ module.exports = function (socket, ip, initial, sm) {
         })
     } else {
       entries = [{command: 'request', data: [command, data], term: self.currentTerm}]
-      self.log.concat(entries)
+      self.log = self.log.concat(entries)
       return self.replicateToMajority(entries, prevLogIndex)
         .then(function () {
           return self.commit(prevLogIndex+1, entries.length)
@@ -577,7 +575,7 @@ module.exports = function (socket, ip, initial, sm) {
           this.log = this.log.slice(0, newLogIndex)
         }
 
-        this.log.concat(args.entries)
+        this.log = this.log.concat(args.entries)
 
         return {func: args.func, term: this.currentTerm, success: this.log[args.prevLogIndex] ? this.log[args.prevLogIndex].term == args.prevLogTerm : true}
         break

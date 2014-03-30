@@ -40,7 +40,7 @@ module.exports = function () {
     this.windows.splice(windowId, 1)
   }
 
-  this.windows = function () {
+  this.getWindows = function () {
     return this.windows
   }
 }
