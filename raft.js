@@ -10,6 +10,7 @@
  * 6   Cluster membership changes
  * 7.  Log compaction
  * 8.  Client interaction
+ * 9.  Persistence (client pending requests + logs)
  */
 
 var q = require('q')
@@ -273,7 +274,7 @@ module.exports = function (socket, ip, serverList, sm) {
   this.serve = function (command, data) {
     var self = this
 
-    var index = self.log.length
+    var requestIndex = self.log.length
     self.log.push({command: [command, data], term: this.currentTerm, state: 'served'})
 
     function appended(results) {
@@ -297,7 +298,7 @@ module.exports = function (socket, ip, serverList, sm) {
       })
     }).then(function () {
       // Replicated to all
-      self.commit()
+      self.commit(requestIndex)
     })
   }
 
