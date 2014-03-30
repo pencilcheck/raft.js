@@ -153,7 +153,7 @@ module.exports = function (socket, ip, serverList, sm) {
           if (!results.success) {
             // Update term??
             self.nextIndex[serverId] -= 1
-            updateEntries()
+            updateEntries(serverId)
           } else {
             self.matchIndex[serverId] = index
             self.nextIndex[serverId] += 1
