@@ -25,7 +25,7 @@ function overHalf(count, list) {
 }
 
 function determineTimeout() {
-  return Math.floor(Math.random() * 5000 + 4000)
+  return Math.floor(Math.random() * 500 + 300)
 }
 
 function addAll(dest, items) {
@@ -165,8 +165,10 @@ module.exports = function (socket, ip, initial, sm) {
   this.setupIndexes = function () {
     var self = this
     this.configuration.servers().forEach(function (server) {
-      self.nextIndex[server] = self.nextIndex[server] || self.log.length
-      self.matchIndex[server] = self.matchIndex[server] || 0
+      if (server != self.id) {
+        self.nextIndex[server] = self.nextIndex[server] || self.log.length
+        self.matchIndex[server] = self.matchIndex[server] || 0
+      }
     })
   }
   this.setupIndexes()
@@ -174,7 +176,7 @@ module.exports = function (socket, ip, initial, sm) {
   this.replicationList = function () {
     var self = this
     // Count leader as part of majority if it is in configuration
-    return this.configuration.servers()
+    return this.configuration.servers().filter(function (server) { return server != self.id })
   }
 
   this.votingList = function () {
@@ -204,7 +206,6 @@ module.exports = function (socket, ip, initial, sm) {
 
     function finalize(yes) {
       count += yes
-      console.log('count is ' + count)
       
       if (resolve(count, neighborList) && dfd) {
         dfd.resolve()
@@ -213,7 +214,7 @@ module.exports = function (socket, ip, initial, sm) {
     }
 
     neighborList.forEach(function (server) {
-      if (server == this.id) {
+      if (server == self.id) {
         qList.push(q.when(1).then(finalize))
       } else {
         qList.push(func.call(self, server).then(function (results) {
@@ -223,17 +224,20 @@ module.exports = function (socket, ip, initial, sm) {
       }
     })
 
-    q.all(qList).then(function () {
-      console.log('q.all')
-      if (dfd)
-        dfd.reject()
-    })
+    if (neighborList.length == 0) {
+      dfd.resolve()
+    } else {
+      q.all(qList).then(function () {
+        if (dfd)
+          dfd.reject()
+      })
+    }
 
     return dfd.promise
   }
 
   this.replicateToOne = function (entry, prevLogIndex, destId) {
-    return self._appendEntries([entry], prevLogIndex, destId).then(function () {
+    return this._appendEntries([entry], prevLogIndex, destId).then(function () {
       if (!results.success) {
         // FIXME: Update term??
         self.nextIndex[destId] -= 1
@@ -246,8 +250,7 @@ module.exports = function (socket, ip, initial, sm) {
   }
 
   this.requestVoteFromMajority = function () {
-    var votes = 1
-    return this.multicast(this.requestVote, votes, voteGranted, overHalf, this.votingList())
+    return this.multicast(this.requestVote, null, voteGranted, overHalf, this.votingList())
   }
 
   this.replicateToMajority = function (entries, prevLogIndex) {
@@ -265,10 +268,11 @@ module.exports = function (socket, ip, initial, sm) {
 
   // FIXME: Better if it is implemented with ES6 generators once it has shim
   this.upToDateWithMajority = function () {
+    var votes = 1 // Include itself because replication list does not include itself
     function upToDate(results) {
       return results.success ? 1 : 0
     }
-    return this.multicast(this.isUpToDateRPC, null, upToDate, overHalf)
+    return this.multicast(this.isUpToDateRPC, votes, upToDate, overHalf)
   }
 
   this.ackTimeout = 1000 // ms
@@ -283,7 +287,6 @@ module.exports = function (socket, ip, initial, sm) {
   }
 
   this.ack = function (destId, messageIndex, payload) {
-    console.log('ack from ' + this.id + ' to ' + destId)
     return this.send(destId, payload, 'ack', messageIndex)
   }
 
@@ -297,13 +300,12 @@ module.exports = function (socket, ip, initial, sm) {
           payload: payload
         }
 
-    console.log('sending ' + message.payload.func + ' (' + message.type + ') to ' + dest + ' with index ' + message.messageIndex)
     this.socket.send(JSON.stringify(message))
 
     if (type != 'ack') {
       var dfd = q.defer()
       var ackId = message.src_id.toString() + message.dest_id.toString() + message.messageIndex.toString()
-      console.log('storing ack id at ' + ackId)
+      console.log('[SEND] ' + message.payload.func + ' (' + message.type + ') to ' + dest + ' with index ' + message.messageIndex + ', ack id (' + ackId + ')')
       this.waitingAcks[ackId] = dfd
       setInterval(function () {
         // Resend indefinitely if not receive ack in timeout
@@ -348,6 +350,7 @@ module.exports = function (socket, ip, initial, sm) {
         var time = self.timeSinceLastHeartbeatFromLeader
         var timeout = self.electionTimeout
         if (time > timeout) {
+          console.log('[UPTODATE]')
           self.upToDateWithMajority().then(function () {
             console.log('[ELECTION] start election (' + time + ' > ' + timeout + ')' + ' role => ' + self.role + ' leader => ' + self.leaderId)
             // Restart election
@@ -365,11 +368,13 @@ module.exports = function (socket, ip, initial, sm) {
 
               // Reset indexes
               self.configuration.servers().forEach(function (server) {
-                self.nextIndex[server] = self.log.length
-                self.matchIndex[server] = 0
+                if (server != self.id) {
+                  self.nextIndex[server] = self.log.length
+                  self.matchIndex[server] = 0
+                }
               })
 
-              self.multicast(self.heartbeat)
+              self.heartbeatToAll()
             }, function () {
               console.log('I lost')
             })
@@ -382,6 +387,7 @@ module.exports = function (socket, ip, initial, sm) {
       if (self.role == 'leader') {
         Object.keys(self.nextIndex).forEach(function (serverId) {
           if (self.log.length-1 >= self.nextIndex[serverId])
+            console.log('[UPDATE]')
             self.replicateToOne(self.log[self.nextIndex[serverId]], self.nextIndex[serverId]-1, serverId)
         })
       }
@@ -389,7 +395,8 @@ module.exports = function (socket, ip, initial, sm) {
 
     setInterval(function () {
       if (self.role == 'leader') {
-        self.multicast(self.heartbeat)
+        console.log('[HEARTBEAT]')
+        self.heartbeatToAll()
       }
     }, self.electionTimeout)
   }
@@ -419,11 +426,10 @@ module.exports = function (socket, ip, initial, sm) {
         self.socket.send(JSON.stringify({type: 'setup', payload: [self.serverId, self.id]}))
         self.eventLoop()
       } else if (data.type == 'ack') {
-        console.log('[ACK] from ' + data.src_id)
         var ackId = data.dest_id.toString() + data.src_id.toString() + data.messageIndex.toString()
         var promise = self.waitingAcks[ackId]
         if (promise) {
-          console.log('found the promise at ' + ackId)
+          console.log('[ACK] from ' + data.src_id + ', ack id (' + ackId + ')')
           promise.resolve(data.payload)
         }
       } else {
@@ -507,8 +513,9 @@ module.exports = function (socket, ip, initial, sm) {
     }
   }
 
-  this.heartbeat = function () {
-    return this.appendEntries([]).apply(this, arguments)
+  this.heartbeatToAll = function () {
+    var votes = 1
+    return this.multicast(this.appendEntries(), votes)
   }
 
   // Only invoked by candidate
