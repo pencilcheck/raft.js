@@ -142,7 +142,6 @@ module.exports = function (socket, ip, initial, sm) {
   // Persistent state on all servers
   this.role = 'follower' // [follower, candidate, leader]
   this.currentTerm = 0
-  this.votes = 0
   this.log = [] // Three states: served -> executed, TODO: should be loaded from persistence (for now firebase)
   this.socket = socket
   this.configuration = new Configuration(latestConfiguration(this.log) || initial) // Configuration
@@ -162,18 +161,38 @@ module.exports = function (socket, ip, initial, sm) {
   this.nextIndex = {}
   this.matchIndex = {}
 
-  var self = this
-  this.configuration.servers().forEach(function (server) {
-    self.nextIndex[server] = self.log.length
-    self.matchIndex[server] = 0
-  })
+  this.setupIndexes = function () {
+    var self = this
+    this.configuration.servers().forEach(function (server) {
+      self.nextIndex[server] = self.nextIndex[server] || self.log.length
+      self.matchIndex[server] = self.matchIndex[server] || 0
+    })
+  }
+  this.setupIndexes()
 
-  this.multicast = function (func, count, increment, resolve) {
+  this.replicationList = function () {
+    var self = this
+    // Count leader as part of majority if it is in configuration
+    return this.configuration.servers()
+  }
+
+  this.votingList = function () {
+    var self = this
+    // Don't count members not up to date as voting members
+    return this.configuration.servers().filter(function (server) {
+      if (self.log[self.matchIndex[server]])
+        return self.isUpToDate(self.log[self.matchIndex[server]].term, self.matchIndex[server], self.log[self.matchIndex[server]].term)
+      else
+        return true
+    })
+  }
+
+  this.multicast = function (func, count, increment, resolve, neighborList) {
     var self = this,
         dfd = q.defer()
-        neighborList = this.configuration.servers(), // Count leader as part of majority if it is in configuration
         qList = []
 
+    neighborList = neighborList || self.replicationList()
     count = count || 0
     increment = increment || function (count) {
       return 1
@@ -225,7 +244,13 @@ module.exports = function (socket, ip, initial, sm) {
     })
   }
 
+  this.requestVoteFromMajority = function () {
+    var votes = 1
+    return this.multicast(this.requestVote, votes, voteGranted, overHalf, this.votingList())
+  }
+
   this.replicateToMajority = function (entries, prevLogIndex) {
+    var self = this
     function appended(results) {
       if (results.success) {
         self.matchIndex[results.serverId] = prevLogIndex + entries.length
@@ -234,7 +259,7 @@ module.exports = function (socket, ip, initial, sm) {
       return results.success ? 1 : 0
     }
 
-    return this.multicast(self.appendEntries(entries, prevLogIndex), null, appended, overHalf)
+    return self.multicast(self.appendEntries(entries, prevLogIndex), null, appended, overHalf)
   }
 
   this.ackTimeout = 1000 // ms
@@ -310,16 +335,16 @@ module.exports = function (socket, ip, initial, sm) {
           self.electionTimeout = determineTimeout()
           self.currentTerm += 1
           self.role = 'candidate'
-          self.votes = 1 // Vote for self
           self.voteFor[self.currentTerm] = self.id
           self.leaderId = null
           self.timeSinceLastHeartbeatFromLeader = 0
 
-          self.multicast(self.requestVote, self.votes, voteGranted, overHalf).then(function () {
+          self.requestVoteFromMajority().then(function () {
             console.log('I won')
             self.role = 'leader'
             self.leaderId = self.id
 
+            // Reset indexes
             self.configuration.servers().forEach(function (server) {
               self.nextIndex[server] = self.log.length
               self.matchIndex[server] = 0
@@ -403,6 +428,7 @@ module.exports = function (socket, ip, initial, sm) {
       // Initiate 2-phase configuration change
       // Replicate the joint configuration
       self.configuration[data[0]].apply(self, data.slice(1))
+      self.setupIndexes()
       entries = [{
         command: 'configuration',
         data: self.configuration.toObject(),
@@ -414,6 +440,7 @@ module.exports = function (socket, ip, initial, sm) {
         .then(function () {
           // Now replicate the new configuration
           self.configuration.commit()
+          self.setupIndexes()
           entries = [{
             command: 'configuration',
             data: self.configuration.toObject(),
