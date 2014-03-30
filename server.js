@@ -1,3 +1,4 @@
+require('es5-shim')
 require('es6-shim')
 
 var RaftServer      = require('./raft.js'),

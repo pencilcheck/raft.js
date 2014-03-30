@@ -27,20 +27,42 @@ function determineTimeout() {
   return Math.floor(Math.random() * 2000 + 1000)
 }
 
-module.exports = function (socket, ip, serverList, sm) {
+var Configuration = (function () {
+  var ConfigurationBase = function () {
+    this.currentConfiguration = new Set(initial)
+    this.jointConfiguration = new Set()
+
+    this.addServers = function (servers) {
+    }
+
+    this.removeServers = function (servers) {
+    }
+
+    this.newConfiguration = function (servers) {
+    }
+
+    this.servers = function () {
+      return this.jointConfiguration.size ? this.jointConfiguration.values() : this.currentConfiguration.values()
+    }
+  }
+
+  return ConfigurationBase
+})()
+
+module.exports = function (socket, ip, configuration, sm) {
   // Persistent state on all servers
   this.role = 'follower' // [follower, candidate, leader]
   this.currentTerm = 0
   this.votes = 0
   this.log = [] // Three states: served -> executed
   this.socket = socket
-  this.serverList = serverList
+  this.configuration = configuration // Configuration
   this.serverId = null // Current server id
   this.leaderId = null
   this.voteFor = {}
   this.electionTimeout = determineTimeout()
   this.ip = ip
-  this.id = serverList.find(function (server) {
+  this.id = configuration.find(function (server) {
     return server.ip == ip
   }).id
   this.sm = sm // State machine
@@ -55,7 +77,7 @@ module.exports = function (socket, ip, serverList, sm) {
   this.matchIndex = {}
 
   var self = this
-  this.serverList.forEach(function (server) {
+  this.configuration.forEach(function (server) {
     self.nextIndex[server.id] = self.log.length
     self.matchIndex[server.id] = 0
   })
@@ -63,7 +85,7 @@ module.exports = function (socket, ip, serverList, sm) {
   this.multicast2 = function (func, count, increment, resolve) {
     var self = this,
         dfd = q.defer()
-        neighborList = this.serverList.filter(function (server) {return server.id != this.id}, this),
+        neighborList = this.configuration.filter(function (server) {return server.id != this.id}, this),
         qList = []
 
     count = count || 0
@@ -96,7 +118,7 @@ module.exports = function (socket, ip, serverList, sm) {
   }
 
   this.multicast = function (cb) {
-    return q.all(this.serverList.filter(function (server) {
+    return q.all(this.configuration.filter(function (server) {
       return server.id != this.id
     }, this).map(cb))
   }
@@ -182,7 +204,7 @@ module.exports = function (socket, ip, serverList, sm) {
             self.role = 'leader'
             self.leaderId = self.id
 
-            self.serverList.forEach(function (server) {
+            self.configuration.forEach(function (server) {
               self.nextIndex[server.id] = self.log.length
               self.matchIndex[server.id] = 0
             })
@@ -235,7 +257,7 @@ module.exports = function (socket, ip, serverList, sm) {
   }
 
   this.leader = function () {
-    this.serverList.find(function (server) {
+    this.configuration.find(function (server) {
       return server.id == this.leaderId
     })
   }
