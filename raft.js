@@ -350,6 +350,7 @@ module.exports = function (socket, ip, initial, sm) {
       // commitIndex is the highest index known to be committed
       // lastApplied is the highest index applied to local state machine
       if (self.commitIndex > self.lastApplied) {
+        console.log('apply missing commits', self.commitIndex, self.lastApplied)
         self.commit(self.lastApplied+1, 1)
       }
 
@@ -397,24 +398,31 @@ module.exports = function (socket, ip, initial, sm) {
       }
 
       if (self.role == 'leader') {
-        //function updateCommitIndex(N) {
-          //var count = 0
-          //Object.keys(self.matchIndex).forEach(function (serverId) {
-            //if (self.matchIndex[serverId] >= N) {
-              //count += 1
-            //}
-          //})
+        function updateCommitIndex(N) {
+          var count = 0
+          Object.keys(self.matchIndex).forEach(function (serverId) {
+            if (self.matchIndex[serverId] >= N) {
+              count += 1
+            }
+          })
 
-          //if (count > Object.keys(self.matchIndex).length / 2 && self.log[N].term == self.currentTerm) {
-            //self.commitIndex = N
-          //}
-        //}
-        //updateCommitIndex(self.commitIndex + 1)
+          if (count > Object.keys(self.matchIndex).length / 2 
+              && self.log.length > N && self.log[N].term == self.currentTerm) {
+            console.log('updateCommitIndex')
+            console.log('N: ' + N)
+            self.commitIndex = N
+          }
+        }
+        updateCommitIndex(self.commitIndex + 1)
 
         Object.keys(self.nextIndex).forEach(function (serverId) {
-          if (self.log.length-1 >= self.nextIndex[serverId])
-            console.log('[UPDATE]')
+          if (self.log.length > 0
+              && self.log[self.nextIndex[serverId]]
+              && self.log.length-1 >= self.nextIndex[serverId]) {
+            console.log('[UPDATE CLIENT] ' + serverId)
+            console.log(self.log, self.log[self.nextIndex[serverId]])
             self.replicateToOne(self.log[self.nextIndex[serverId]], self.nextIndex[serverId]-1, serverId)
+          }
         })
       }
     })
@@ -432,13 +440,13 @@ module.exports = function (socket, ip, initial, sm) {
     var self = this,
         results = [],
         entries = this.log.slice(index, index+length)
-    console.log(this.log)
-    console.log('commit: ' + index + ', ' + length)
+    console.log('[COMMIT] ' + JSON.stringify(self.log[index]) + ' at ' + index + ' length ' + length)
     entries.forEach(function (entry, offset) {
       if (entry.command == 'request') {
         console.log('applying entry to SM')
         results.push(self.sm[entry.data[0]].apply(self.sm, entry.data[1]))
         self.lastApplied = index + offset
+        self.commitIndex = Math.max(self.lastApplied, self.commitIndex)
       }
     })
     return results
@@ -530,9 +538,9 @@ module.exports = function (socket, ip, initial, sm) {
     return this.rpc(destId, 'appendEntries', {
       term: this.currentTerm,
       leaderId: this.leaderId,
-      prevLogIndex: prevLogIndex >= 0 ? prevLogIndex : null,
-      prevLogTerm: prevLogIndex >= 0 ? this.log[prevLogIndex].term : null,
-      entries: entries || [], // For now entries should only contain one entry
+      prevLogIndex: prevLogIndex >= 0 && this.log.length > prevLogIndex ? prevLogIndex : null,
+      prevLogTerm: prevLogIndex >= 0 && this.log.length > prevLogIndex ? this.log[prevLogIndex].term : null,
+      entries: entries, // For now entries should only contain at most one entry
       leaderCommit: this.commitIndex,
     })
   }
@@ -546,7 +554,7 @@ module.exports = function (socket, ip, initial, sm) {
 
   this.heartbeatToAll = function () {
     var votes = 1
-    return this.multicast(this.appendEntries(), votes)
+    return this.multicast(this.appendEntries([], this.log.length-1), votes)
   }
 
   // Only invoked by candidate
@@ -570,7 +578,7 @@ module.exports = function (socket, ip, initial, sm) {
         }
         break
       case 'appendEntries':
-        if (!this.isUpToDate(args.term)) {
+        if (!this.isUpToDate(args.term) || (this.log[args.prevLogIndex] && this.log[args.prevLogIndex].term != args.prevLogTerm)) {
           return {func: args.func, term: this.currentTerm, success: false}
         }
 
@@ -581,11 +589,13 @@ module.exports = function (socket, ip, initial, sm) {
         this.commitIndex = args.leaderCommit > this.commitIndex ? Math.min(args.leaderCommit, this.log.length-1) : this.commitIndex
 
         var newLogIndex = args.prevLogIndex+1
-        if (this.log[newLogIndex] && this.log[newLogIndex].term != args.entries[0].term) {
+        if (this.log[newLogIndex]
+            && args.entries.length > 0
+            && this.log[newLogIndex].term != args.entries[0].term) {
           this.log = this.log.slice(0, newLogIndex)
         }
 
-        this.log = this.log.concat(args.entries)
+        this.log = this.log.concat(args.entries) 
 
         return {func: args.func, term: this.currentTerm, success: this.log[args.prevLogIndex] ? this.log[args.prevLogIndex].term == args.prevLogTerm : true}
         break
