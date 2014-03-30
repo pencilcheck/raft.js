@@ -24,7 +24,7 @@ function overHalf(count, list) {
 }
 
 function determineTimeout() {
-  return Math.floor(Math.random() * 2000 + 1000)
+  return Math.floor(Math.random() * 5000 + 4000)
 }
 
 function addAll(dest, items) {
@@ -262,6 +262,14 @@ module.exports = function (socket, ip, initial, sm) {
     return self.multicast(self.appendEntries(entries, prevLogIndex), null, appended, overHalf)
   }
 
+  // FIXME: Better if it is implemented with ES6 generators once it has shim
+  this.upToDateWithMajority = function () {
+    function upToDate(results) {
+      return results.success ? 1 : 0
+    }
+    return this.multicast(this.isUpToDateRPC, null, upToDate, overHalf)
+  }
+
   this.ackTimeout = 1000 // ms
   this.waitingAcks = {}
   this.messageIndex = 0
@@ -304,6 +312,15 @@ module.exports = function (socket, ip, initial, sm) {
     }
   }
 
+  // Invoked by candidate
+  this.isUpToDateRPC = function (destId) {
+    return this.rpc(destId, 'isUpToDate', {
+      term: this.currentTerm,
+      lastLogIndex: this.log.length-1 > -1 ? this.log.length-1 : null,
+      lastLogTerm: this.log.length-1 > -1 ? this.log[this.log.length-1].term : null
+    })
+  }
+
   this.isUpToDate = function (term, lastLogIndex, lastLogTerm) {
     if (term > this.currentTerm)
       this.role = 'follower'
@@ -330,29 +347,33 @@ module.exports = function (socket, ip, initial, sm) {
         var time = self.timeSinceLastHeartbeatFromLeader
         var timeout = self.electionTimeout
         if (time > timeout) {
-          console.log('[ELECTION] start election (' + time + ' > ' + timeout + ')' + ' role => ' + self.role + ' leader => ' + self.leaderId)
-          // Restart election
-          self.electionTimeout = determineTimeout()
-          self.currentTerm += 1
-          self.role = 'candidate'
-          self.voteFor[self.currentTerm] = self.id
-          self.leaderId = null
-          self.timeSinceLastHeartbeatFromLeader = 0
+          self.upToDateWithMajority().then(function () {
+            console.log('[ELECTION] start election (' + time + ' > ' + timeout + ')' + ' role => ' + self.role + ' leader => ' + self.leaderId)
+            // Restart election
+            self.electionTimeout = determineTimeout()
+            self.currentTerm += 1
+            self.role = 'candidate'
+            self.voteFor[self.currentTerm] = self.id
+            self.leaderId = null
+            self.timeSinceLastHeartbeatFromLeader = 0
 
-          self.requestVoteFromMajority().then(function () {
-            console.log('I won')
-            self.role = 'leader'
-            self.leaderId = self.id
+            self.requestVoteFromMajority().then(function () {
+              console.log('I won')
+              self.role = 'leader'
+              self.leaderId = self.id
 
-            // Reset indexes
-            self.configuration.servers().forEach(function (server) {
-              self.nextIndex[server] = self.log.length
-              self.matchIndex[server] = 0
+              // Reset indexes
+              self.configuration.servers().forEach(function (server) {
+                self.nextIndex[server] = self.log.length
+                self.matchIndex[server] = 0
+              })
+
+              self.multicast(self.heartbeat)
+            }, function () {
+              console.log('I lost')
             })
-
-            self.multicast(self.heartbeat)
           }, function () {
-            console.log('I lost')
+            self.role = 'follower'
           })
         }
       }
@@ -502,6 +523,13 @@ module.exports = function (socket, ip, initial, sm) {
   this.respondToRequest = function (args) {
     var role = this.role
     switch(args.func) {
+      case 'isUpToDate':
+        return {
+          func: args.func,
+          term: this.currentTerm,
+          success: this.isUpToDate(args.term, args.lastLogIndex, args.lastLogTerm)
+        }
+        break
       case 'appendEntries':
         if (!this.isUpToDate(args.term)) {
           return {func: args.func, term: this.currentTerm, success: false}
