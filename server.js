@@ -6,7 +6,7 @@ var RaftServer      = require('./raft.js'),
     http            = require('http'),
     express         = require('express'),
     app             = express(),
-    port            = process.env.PORT || (process.argv.indexOf('-p') > -1 && process.argv[process.argv.indexOf('-p')+1]) || 5000,
+    port            = process.env.PORT || process.argv[process.argv.indexOf('-p')+1] || 5000,
     serverList      = [
       'http://localhost:5000',
       'http://localhost:5001',
@@ -17,7 +17,13 @@ var RaftServer      = require('./raft.js'),
     sm              = new STM(),
     socketUrl       = 'ws://localhost:3000/',
     ws              = new WebSocket.Client(socketUrl),
-    raftServer      = new RaftServer(ws, 'http://localhost:' + port, serverList, sm)
+    raftServer      = new RaftServer(ws, 'http://localhost:' + port, serverList, sm),
+    debug           = process.argv[process.argv.indexOf('--debug')+1] || true
+
+if (!debug) {
+  console.log = function () {
+  }
+}
 
 app.use(express.static(__dirname + '/'))
 
