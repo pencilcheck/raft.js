@@ -425,13 +425,15 @@ module.exports = function (socket, ip, initial, sm) {
   // TODO: Commit to STM (also persistence)
   this.commit = function (index, length) {
     var self = this,
+        results = [],
         entries = this.log.slice(index, index+length)
     entries.forEach(function (entry, offset) {
       if (entry.command == 'request') {
-        self.sm[entry.data[0]].apply(self, entry.data[1])
+        results.push(self.sm[entry.data[0]].apply(self, entry.data[1]))
         self.lastApplied = index + offset
       }
     })
+    return results
   }
 
   this.leader = function () {
@@ -510,7 +512,7 @@ module.exports = function (socket, ip, initial, sm) {
       self.log.concat(entries)
       return self.replicateToMajority(entries, prevLogIndex)
         .then(function () {
-          self.commit(prevLogIndex+1, entries.length)
+          return self.commit(prevLogIndex+1, entries.length)
         })
     }
   }

@@ -17,7 +17,7 @@ var RaftServer      = require('./raft.js'),
     sm              = new STM(),
     socketUrl       = 'ws://localhost:3000/',
     ws              = new WebSocket.Client(socketUrl),
-    raftServer      = new RaftServer(ws, 'http://localhost:' + port, null, sm),
+    raftServer      = new RaftServer(ws, 'http://localhost:' + port, serverList, sm),
     debug           = process.argv[process.argv.indexOf('--debug')+1] || true
 
 if (!debug) {
@@ -39,8 +39,8 @@ function redirectToLeader(res, url) {
 app.post('/', function (req, res) {
   if (raftServer.role == 'leader') {
     raftServer.serve(req.param('command'), JSON.parse(req.param('data')))
-      .then(function (result) {
-        res.send(result)
+      .then(function (results) {
+        res.send(results)
       })
   } else {
     redirectToLeader(res, raftServer.leader().ip + req.path)

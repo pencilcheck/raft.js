@@ -33,9 +33,14 @@ module.exports = function () {
 
   this.openWindow = function () {
     this.windows.push(new Window())
+    return this.windows.length-1
   }
 
   this.closeWindow = function (windowId) {
     this.windows.splice(windowId, 1)
+  }
+
+  this.windows = function () {
+    return this.windows
   }
 }
