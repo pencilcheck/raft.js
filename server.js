@@ -40,7 +40,7 @@ app.post('/', function (req, res) {
   if (raftServer.role == 'leader') {
     raftServer.serve(req.param('command'), JSON.parse(req.param('data')))
       .then(function (results) {
-        res.send(results)
+        res.send(JSON.stringify(results))
       })
   } else {
     redirectToLeader(res, raftServer.leader().ip + req.path)
@@ -51,7 +51,7 @@ app.post('/configure', function (req, res) {
   if (raftServer.role == 'leader') {
     raftServer.serve('configuration', ['setServers'].concat(JSON.parse(req.param('data'))))
       .then(function (result) {
-        res.send(result)
+        res.send(JSON.stringify(result))
       })
   } else {
     redirectToLeader(res, raftServer.leader().ip + req.path)
@@ -62,7 +62,7 @@ app.post('/configure/add', function (req, res) {
   if (raftServer.role == 'leader') {
     raftServer.serve('configuration', ['addServers'].concat(JSON.parse(req.param('data'))))
       .then(function (result) {
-        res.send(result)
+        res.send(JSON.stringify(result))
       })
   } else {
     redirectToLeader(res, raftServer.leader().ip + req.path)
@@ -73,7 +73,7 @@ app.delete('/configure', function (req, res) {
   if (raftServer.role == 'leader') {
     raftServer.serve('configuration', ['removeServers'].concat(JSON.parse(req.param('data'))))
       .then(function (result) {
-        res.send(result)
+        res.send(JSON.stringify(result))
       })
   } else {
     redirectToLeader(res, raftServer.leader().ip + req.path)
