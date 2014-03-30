@@ -150,10 +150,7 @@ module.exports = function (socket, ip, initial, sm) {
   this.leaderId = null
   this.voteFor = {}
   this.electionTimeout = determineTimeout()
-  this.ip = ip
-  this.id = this.configuration.servers().find(function (server) {
-    return server.ip == ip
-  }).id
+  this.id = ip
   this.sm = sm // State machine
 
   // Volatile state on all servers
@@ -167,14 +164,14 @@ module.exports = function (socket, ip, initial, sm) {
 
   var self = this
   this.configuration.servers().forEach(function (server) {
-    self.nextIndex[server.id] = self.log.length
-    self.matchIndex[server.id] = 0
+    self.nextIndex[server] = self.log.length
+    self.matchIndex[server] = 0
   })
 
   this.multicast2 = function (func, count, increment, resolve) {
     var self = this,
         dfd = q.defer()
-        neighborList = this.configuration.servers().filter(function (server) {return server.id != this.id}, this),
+        neighborList = this.configuration.servers().filter(function (server) {return server != this.id}),
         qList = []
 
     count = count || 0
@@ -186,7 +183,7 @@ module.exports = function (socket, ip, initial, sm) {
     }
 
     neighborList.forEach(function (server) {
-      qList.push(func.call(self, server.id).then(increment).then(function (yes) {
+      qList.push(func.call(self, server).then(increment).then(function (yes) {
         count += yes
         console.log('count is ' + count)
         
@@ -208,7 +205,7 @@ module.exports = function (socket, ip, initial, sm) {
 
   this.multicast = function (cb) {
     return q.all(this.configuration.servers().filter(function (server) {
-      return server.id != this.id
+      return server != this.id
     }, this).map(cb))
   }
 
@@ -243,7 +240,7 @@ module.exports = function (socket, ip, initial, sm) {
 
     if (type != 'ack') {
       var dfd = q.defer()
-      var ackId = parseInt(message.src_id).toString() + parseInt(message.dest_id).toString() + parseInt(message.messageIndex).toString()
+      var ackId = message.src_id.toString() + message.dest_id.toString() + message.messageIndex.toString()
       console.log('storing ack id at ' + ackId)
       this.waitingAcks[ackId] = dfd
       setInterval(function () {
@@ -294,8 +291,8 @@ module.exports = function (socket, ip, initial, sm) {
             self.leaderId = self.id
 
             self.configuration.servers().forEach(function (server) {
-              self.nextIndex[server.id] = self.log.length
-              self.matchIndex[server.id] = 0
+              self.nextIndex[server] = self.log.length
+              self.matchIndex[server] = 0
             })
 
             self.multicast2(self.heartbeat)
@@ -347,7 +344,7 @@ module.exports = function (socket, ip, initial, sm) {
 
   this.leader = function () {
     this.configuration.servers().find(function (server) {
-      return server.id == this.leaderId
+      return server == this.leaderId
     })
   }
 
@@ -361,7 +358,7 @@ module.exports = function (socket, ip, initial, sm) {
         self.eventLoop()
       } else if (data.type == 'ack') {
         console.log('[ACK] from ' + data.src_id)
-        var ackId = parseInt(data.dest_id).toString() + parseInt(data.src_id).toString() + parseInt(data.messageIndex).toString()
+        var ackId = data.dest_id.toString() + data.src_id.toString() + data.messageIndex.toString()
         var promise = self.waitingAcks[ackId]
         if (promise) {
           console.log('found the promise at ' + ackId)
@@ -400,21 +397,21 @@ module.exports = function (socket, ip, initial, sm) {
 
     function appended(results) {
       if (results.success) {
-        self.matchIndex[server.id] = index
-        self.nextIndex[server.id] += 1
+        self.matchIndex[server] = index
+        self.nextIndex[server] += 1
       }
     }
 
     return self.multicast(function (server) {
-      var index = self.nextIndex[server.id],
+      var index = self.nextIndex[server],
           entries = self.log.slice(index, index+1)
 
-      return self._appendEntries(entries, server.id).then(function (results) {
+      return self._appendEntries(entries, server).then(function (results) {
         if (!results.success) {
           // Update term??
         } else {
-          self.matchIndex[server.id] = index
-          self.nextIndex[server.id] += 1
+          self.matchIndex[server] = index
+          self.nextIndex[server] += 1
         }
       })
     }).then(function () {
