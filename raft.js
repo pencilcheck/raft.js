@@ -168,10 +168,10 @@ module.exports = function (socket, ip, initial, sm) {
     self.matchIndex[server] = 0
   })
 
-  this.multicast2 = function (func, count, increment, resolve) {
+  this.multicast = function (func, count, increment, resolve) {
     var self = this,
         dfd = q.defer()
-        neighborList = this.configuration.servers().filter(function (server) {return server != this.id}),
+        neighborList = this.configuration.servers(), // Count leader as part of majority if it is in configuration
         qList = []
 
     count = count || 0
@@ -182,16 +182,25 @@ module.exports = function (socket, ip, initial, sm) {
       return count == list
     }
 
+    function finalize(yes) {
+      count += yes
+      console.log('count is ' + count)
+      
+      if (resolve(count, neighborList) && dfd) {
+        dfd.resolve()
+        dfd = null
+      }
+    }
+
     neighborList.forEach(function (server) {
-      qList.push(func.call(self, server).then(increment).then(function (yes) {
-        count += yes
-        console.log('count is ' + count)
-        
-        if (resolve(count, neighborList) && dfd) {
-          dfd.resolve()
-          dfd = null
-        }
-      }))
+      if (server == this.id) {
+        qList.push(q.when(1).then(finalize))
+      } else {
+        qList.push(func.call(self, server).then(function (results) {
+          results.serverId = server
+          return results
+        }).then(increment).then(finalize))
+      }
     })
 
     q.all(qList).then(function () {
@@ -203,10 +212,29 @@ module.exports = function (socket, ip, initial, sm) {
     return dfd.promise
   }
 
-  this.multicast = function (cb) {
-    return q.all(this.configuration.servers().filter(function (server) {
-      return server != this.id
-    }, this).map(cb))
+  this.replicateToOne = function (entry, prevLogIndex, destId) {
+    return self._appendEntries([entry], prevLogIndex, destId).then(function () {
+      if (!results.success) {
+        // FIXME: Update term??
+        self.nextIndex[destId] -= 1
+        self.replicateToOne(entry, prevLogIndex, destId)
+      } else {
+        self.matchIndex[destId] = prevLogIndex + 1
+        self.nextIndex[destId] += 1
+      }
+    })
+  }
+
+  this.replicateToMajority = function (entries, prevLogIndex) {
+    function appended(results) {
+      if (results.success) {
+        self.matchIndex[results.serverId] = prevLogIndex + entries.length
+        self.nextIndex[results.serverId] += entries.length
+      }
+      return results.success ? 1 : 0
+    }
+
+    return this.multicast(self.appendEntries(entries, prevLogIndex), null, appended, overHalf)
   }
 
   this.ackTimeout = 1000 // ms
@@ -268,7 +296,9 @@ module.exports = function (socket, ip, initial, sm) {
   this.eventLoop = function () {
     var self = this
     setInterval(function () {
-      if (self.role == 'follower' || self.role == 'candidate') {
+      // Can only requestVote if it is included in the current configuration
+      if ((self.role == 'follower' || self.role == 'candidate') 
+          && self.configuration.servers().indexOf(self.id) > -1) {
         self.timeSinceLastHeartbeatFromLeader += 1
 
         // So weird, assigning to a variable works
@@ -285,7 +315,7 @@ module.exports = function (socket, ip, initial, sm) {
           self.leaderId = null
           self.timeSinceLastHeartbeatFromLeader = 0
 
-          self.multicast2(self.requestVote, self.votes, voteGranted, overHalf).then(function () {
+          self.multicast(self.requestVote, self.votes, voteGranted, overHalf).then(function () {
             console.log('I won')
             self.role = 'leader'
             self.leaderId = self.id
@@ -295,44 +325,29 @@ module.exports = function (socket, ip, initial, sm) {
               self.matchIndex[server] = 0
             })
 
-            self.multicast2(self.heartbeat)
+            self.multicast(self.heartbeat)
           }, function () {
             console.log('I lost')
           })
         }
       }
 
-      function updateEntries(serverId) {
-        var index = self.nextIndex[serverId],
-            entries = self.log.slice(index, index+1)
-        self._appendEntries(entries, serverId).then(function (results) {
-          if (!results.success) {
-            // Update term??
-            self.nextIndex[serverId] -= 1
-            updateEntries(serverId)
-          } else {
-            self.matchIndex[serverId] = index
-            self.nextIndex[serverId] += 1
-          }
-        })
-      }
-
       if (self.role == 'leader') {
         Object.keys(self.nextIndex).forEach(function (serverId) {
           if (self.log.length-1 >= self.nextIndex[serverId])
-            updateEntries(serverId)
+            self.replicateToOne(self.log[self.nextIndex[serverId]], self.nextIndex[serverId]-1, serverId)
         })
       }
     })
 
     setInterval(function () {
       if (self.role == 'leader') {
-        self.multicast2(self.heartbeat)
+        self.multicast(self.heartbeat)
       }
     }, self.electionTimeout)
   }
 
-  // Commitment (also means persistence)
+  // TODO: Commit to STM (also persistence)
   this.commit = function (index) {
     var command = this.log[index][0],
         data    = this.log[index][1]
@@ -381,61 +396,65 @@ module.exports = function (socket, ip, initial, sm) {
   // Only invoked by leader when serving client requests
   this.serve = function (command, data) {
     var self = this,
-        requestIndex = self.log.length
+        prevLogIndex = self.log.length-1,
+        entries = []
 
     if (command.startsWith('configuration')) {
+      // Initiate 2-phase configuration change
+      // Replicate the joint configuration
       self.configuration[data[0]].apply(self, data.slice(1))
-      self.log.push({
+      entries = [{
         command: 'configuration',
         data: self.configuration.toObject(),
         term: self.currentTerm,
         state: 'executed'
-      })
+      }]
+      self.log.concat(entries)
+      self.replicateToMajority(entries, prevLogIndex)
+        .then(function () {
+          // Now replicate the new configuration
+          self.configuration.commit()
+          entries = [{
+            command: 'configuration',
+            data: self.configuration.toObject(),
+            term: self.currentTerm,
+            state: 'executed'
+          }]
+          prevLogIndex = self.log.length-1
+          self.log.concat(entries)
+          self.replicateToMajority(entries, prevLogIndex).then(function () {
+            // Step down if the new configuration does not include itself
+            if (self.configuration.servers().indexOf(self.id) < 0) {
+              self.role = 'follower'
+            }
+          })
+        })
     } else {
-      self.log.push({command: [command, data], term: self.currentTerm, state: 'served'})
+      entries = [{command: [command, data], term: self.currentTerm, state: 'served'}]
+      self.log.concat(entries)
+      return self.replicateToMajority(entries, prevLogIndex)
+        .then(function () {
+          self.commit(entries, prevLogIndex+1)
+        })
     }
-
-    function appended(results) {
-      if (results.success) {
-        self.matchIndex[server] = index
-        self.nextIndex[server] += 1
-      }
-    }
-
-    return self.multicast(function (server) {
-      var index = self.nextIndex[server],
-          entries = self.log.slice(index, index+1)
-
-      return self._appendEntries(entries, server).then(function (results) {
-        if (!results.success) {
-          // Update term??
-        } else {
-          self.matchIndex[server] = index
-          self.nextIndex[server] += 1
-        }
-      })
-    }).then(function () {
-      // Replicated to all
-      self.commit(requestIndex)
-    })
   }
 
   // Only invoked by leader
-  this._appendEntries = function (entries, destId) {
+  this._appendEntries = function (entries, prevLogIndex, destId) {
     return this.rpc(destId, 'appendEntries', {
       term: this.currentTerm,
       leaderId: this.leaderId,
-      prevLogIndex: this.log.length-2 >= 0 ? this.log.length-2 : null,
-      prevLogTerm: this.log.length-2 >= 0 ? this.log[this.log.length-2].term : null,
-      entries: entries || [], // For now entries contain only one entry
+      prevLogIndex: prevLogIndex >= 0 ? prevLogIndex : null,
+      prevLogTerm: prevLogIndex >= 0 ? this.log[prevLogIndex].term : null,
+      entries: entries || [], // For now entries should only contain one entry
       leaderCommit: this.commitIndex,
     })
   }
 
-  this.appendEntries = function (entries) {
+  this.appendEntries = function (entries, prevLogIndex) {
     var self = this
     return function (serverId) {
-      return self._appendEntries(entries, serverId)
+      return self._appendEntries(entries, prevLogIndex, serverId)
     }
   }
 
@@ -465,7 +484,7 @@ module.exports = function (socket, ip, initial, sm) {
         this.timeSinceLastHeartbeatFromLeader = 0
 
         this.leaderId = args.leaderId
-        this.commitIndex = args.commitIndex > this.commitIndex ? Math.min(args.commitIndex, this.log.length-1) : this.commitIndex
+        this.commitIndex = args.leaderCommit > this.commitIndex ? Math.min(args.commitIndex, this.log.length-1) : this.commitIndex
 
         var newLogIndex = args.prevLogIndex+1
         if (this.log[newLogIndex] && this.log[newLogIndex].term != args.entries[0].term) {
