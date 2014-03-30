@@ -54,6 +54,14 @@ Object.prototype.extend = function (base, obj) {
   return dest
 }
 
+Object.defineProperty(Array, 'copy', {
+  get: function () {
+    return function (array) {
+      return array.map(Array.apply.bind(Array, null))
+    }
+  }
+})
+
 Object.prototype.values = function (obj) {
   var values = []
   Object.keys(obj).forEach(function (key) {
@@ -67,8 +75,6 @@ var Configuration = (function () {
     this.currentConfiguration = {}
     this.newConfiguration = {}
     this.cloned = false
-
-    addAll(this.currentConfiguration, initial)
 
     this.addServers = function (servers) {
       if (!this.cloned) {
@@ -96,23 +102,50 @@ var Configuration = (function () {
       return Object.values(Object.extend(this.currentConfiguration, this.newConfiguration))
     }
 
+    this.fromObject = function (obj) {
+      if (obj.currentConfiguration)
+        this.currentConfiguration = obj.currentConfiguration
+      if (obj.newConfiguration)
+        this.newConfiguration = obj.newConfiguration
+    }
+
+    this.toObject = function () {
+      return {currentConfiguration: this.currentConfiguration, newConfiguration: this.newConfiguration}
+    }
+
     this.commit = function () {
       this.currentConfiguration = this.newConfiguration
       this.newConfiguration = {}
+    }
+
+    if (Array.isArray(initial)) {
+      addAll(this.currentConfiguration, initial)
+    } else {
+      this.fromObject(initial)
     }
   }
 
   return ConfigurationBase
 })()
 
+function latestConfiguration(log) {
+  Array.copy(log).reverse().forEach(function (entry) {
+    if (entry.command.startsWith('configuration')) {
+      return entry.data
+    }
+  })
+
+  return false
+}
+
 module.exports = function (socket, ip, initial, sm) {
   // Persistent state on all servers
   this.role = 'follower' // [follower, candidate, leader]
   this.currentTerm = 0
   this.votes = 0
-  this.log = [] // Three states: served -> executed
+  this.log = [] // Three states: served -> executed, TODO: should be loaded from persistence (for now firebase)
   this.socket = socket
-  this.configuration = new Configuration(initial) // Configuration
+  this.configuration = new Configuration(latestConfiguration(this.log) || initial) // Configuration
   this.serverId = null // Current server id
   this.leaderId = null
   this.voteFor = {}
@@ -350,10 +383,20 @@ module.exports = function (socket, ip, initial, sm) {
 
   // Only invoked by leader when serving client requests
   this.serve = function (command, data) {
-    var self = this
+    var self = this,
+        requestIndex = self.log.length
 
-    var requestIndex = self.log.length
-    self.log.push({command: [command, data], term: this.currentTerm, state: 'served'})
+    if (command.startsWith('configuration')) {
+      self.configuration[data[0]].apply(self, data.slice(1))
+      self.log.push({
+        command: 'configuration',
+        data: self.configuration.toObject(),
+        term: self.currentTerm,
+        state: 'executed'
+      })
+    } else {
+      self.log.push({command: [command, data], term: self.currentTerm, state: 'served'})
+    }
 
     function appended(results) {
       if (results.success) {
@@ -363,8 +406,8 @@ module.exports = function (socket, ip, initial, sm) {
     }
 
     return self.multicast(function (server) {
-      var index = this.nextIndex[server.id],
-          entries = this.log.slice(index, index+1)
+      var index = self.nextIndex[server.id],
+          entries = self.log.slice(index, index+1)
 
       return self._appendEntries(entries, server.id).then(function (results) {
         if (!results.success) {

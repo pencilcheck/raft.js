@@ -21,16 +21,54 @@ var RaftServer      = require('./raft.js'),
 
 app.use(express.static(__dirname + '/'))
 
-app.get('/', function (req, res) {
+function redirectToLeader(res, url) {
+  // Redirect to leader
+  // http://stackoverflow.com/questions/17612695/expressjs-how-to-redirect-a-post-request-with-parameters
+  console.log('redirect client request to leader at', url)
+  res.redirect(307, url)
+}
+
+app.post('/', function (req, res) {
   if (raftServer.role == 'leader') {
-    raftServer.serve(req.param('command'), JSON.parse(req.param('data'))).then(function (result) {
-      res.send(result)
-    })
+    raftServer.serve(req.param('command'), JSON.parse(req.param('data')))
+      .then(function (result) {
+        res.send(result)
+      })
   } else {
-    // Redirect to leader
-    // http://stackoverflow.com/questions/17612695/expressjs-how-to-redirect-a-post-request-with-parameters
-    console.log('redirect client request to leader', raftServer.leader().id)
-    res.redirect(307, raftServer.leader().ip + req.path)
+    redirectToLeader(res, raftServer.leader().ip + req.path)
+  }
+})
+
+app.post('/configure', function (req, res) {
+  if (raftServer.role == 'leader') {
+    raftServer.serve('configuration', ['setServers'].concat(JSON.parse(req.param('data'))))
+      .then(function (result) {
+        res.send(result)
+      })
+  } else {
+    redirectToLeader(res, raftServer.leader().ip + req.path)
+  }
+})
+
+app.post('/configure/add', function (req, res) {
+  if (raftServer.role == 'leader') {
+    raftServer.serve('configuration', ['addServers'].concat(JSON.parse(req.param('data'))))
+      .then(function (result) {
+        res.send(result)
+      })
+  } else {
+    redirectToLeader(res, raftServer.leader().ip + req.path)
+  }
+})
+
+app.delete('/configure', function (req, res) {
+  if (raftServer.role == 'leader') {
+    raftServer.serve('configuration', ['removeServers'].concat(JSON.parse(req.param('data'))))
+      .then(function (result) {
+        res.send(result)
+      })
+  } else {
+    redirectToLeader(res, raftServer.leader().ip + req.path)
   }
 })
 
