@@ -27,42 +27,98 @@ function determineTimeout() {
   return Math.floor(Math.random() * 2000 + 1000)
 }
 
+function addAll(dest, items) {
+  items.forEach(function (item) {
+    dest[JSON.stringify(item)] = item
+  })
+}
+
+function removeAll(dest, items) {
+  items.forEach(function (item) {
+    delete dest[JSON.stringify(item)]
+  })
+}
+
+Object.prototype.extend = function (base, obj) {
+  var dest = {}
+  Object.keys(base).forEach(function (key) {
+    if (!dest[key])
+      dest[key] = base[key]
+  })
+
+  Object.keys(obj).forEach(function (key) {
+    if (!dest[key])
+      dest[key] = obj[key]
+  })
+
+  return dest
+}
+
+Object.prototype.values = function (obj) {
+  var values = []
+  Object.keys(obj).forEach(function (key) {
+    values.push(obj[key])
+  })
+  return values
+}
+
 var Configuration = (function () {
-  var ConfigurationBase = function () {
-    this.currentConfiguration = new Set(initial)
-    this.jointConfiguration = new Set()
+  var ConfigurationBase = function (initial) {
+    this.currentConfiguration = {}
+    this.newConfiguration = {}
+    this.cloned = false
+
+    addAll(this.currentConfiguration, initial)
 
     this.addServers = function (servers) {
+      if (!this.cloned) {
+        addAll(this.newConfiguration, Object.values(this.currentConfiguration))
+        this.cloned = true
+      }
+      addAll(this.newConfiguration, servers)
     }
 
     this.removeServers = function (servers) {
+      if (!this.cloned) {
+        addAll(this.newConfiguration, Object.values(this.currentConfiguration))
+        this.cloned = true
+      }
+      removeAll(this.newConfiguration, servers)
     }
 
-    this.newConfiguration = function (servers) {
+    this.setServers = function (servers) {
+      this.newConfiguration = {}
+      addAll(this.newConfiguation, servers)
+      this.cloned = false
     }
 
     this.servers = function () {
-      return this.jointConfiguration.size ? this.jointConfiguration.values() : this.currentConfiguration.values()
+      return Object.values(Object.extend(this.currentConfiguration, this.newConfiguration))
+    }
+
+    this.commit = function () {
+      this.currentConfiguration = this.newConfiguration
+      this.newConfiguration = {}
     }
   }
 
   return ConfigurationBase
 })()
 
-module.exports = function (socket, ip, configuration, sm) {
+module.exports = function (socket, ip, initial, sm) {
   // Persistent state on all servers
   this.role = 'follower' // [follower, candidate, leader]
   this.currentTerm = 0
   this.votes = 0
   this.log = [] // Three states: served -> executed
   this.socket = socket
-  this.configuration = configuration // Configuration
+  this.configuration = new Configuration(initial) // Configuration
   this.serverId = null // Current server id
   this.leaderId = null
   this.voteFor = {}
   this.electionTimeout = determineTimeout()
   this.ip = ip
-  this.id = configuration.find(function (server) {
+  this.id = this.configuration.servers().find(function (server) {
     return server.ip == ip
   }).id
   this.sm = sm // State machine
@@ -77,7 +133,7 @@ module.exports = function (socket, ip, configuration, sm) {
   this.matchIndex = {}
 
   var self = this
-  this.configuration.forEach(function (server) {
+  this.configuration.servers().forEach(function (server) {
     self.nextIndex[server.id] = self.log.length
     self.matchIndex[server.id] = 0
   })
@@ -85,7 +141,7 @@ module.exports = function (socket, ip, configuration, sm) {
   this.multicast2 = function (func, count, increment, resolve) {
     var self = this,
         dfd = q.defer()
-        neighborList = this.configuration.filter(function (server) {return server.id != this.id}, this),
+        neighborList = this.configuration.servers().filter(function (server) {return server.id != this.id}, this),
         qList = []
 
     count = count || 0
@@ -118,7 +174,7 @@ module.exports = function (socket, ip, configuration, sm) {
   }
 
   this.multicast = function (cb) {
-    return q.all(this.configuration.filter(function (server) {
+    return q.all(this.configuration.servers().filter(function (server) {
       return server.id != this.id
     }, this).map(cb))
   }
@@ -204,7 +260,7 @@ module.exports = function (socket, ip, configuration, sm) {
             self.role = 'leader'
             self.leaderId = self.id
 
-            self.configuration.forEach(function (server) {
+            self.configuration.servers().forEach(function (server) {
               self.nextIndex[server.id] = self.log.length
               self.matchIndex[server.id] = 0
             })
@@ -257,7 +313,7 @@ module.exports = function (socket, ip, configuration, sm) {
   }
 
   this.leader = function () {
-    this.configuration.find(function (server) {
+    this.configuration.servers().find(function (server) {
       return server.id == this.leaderId
     })
   }
