@@ -14,19 +14,30 @@
 
 var q = require('q')
 
+function voteGranted(results) {
+  return results.voteGranted ? 1 : 0
+}
+
+function overHalf(count, list) {
+  return count > list.length / 2
+}
+
+function determineTimeout() {
+  return Math.floor(Math.random() * 2000 + 1000)
+}
+
 module.exports = function (socket, ip, serverList, sm) {
   // Persistent state on all servers
   this.role = 'follower' // [follower, candidate, leader]
   this.currentTerm = 0
   this.votes = 0
-  this.votedFor = null
   this.log = [] // Three states: served -> executed
   this.socket = socket
   this.serverList = serverList
   this.serverId = null // Current server id
   this.leaderId = null
   this.voteFor = {}
-  this.electionTimeout = Math.floor(Math.random() * 300 + 150) // 150-300 ms
+  this.electionTimeout = determineTimeout()
   this.ip = ip
   this.id = serverList.find(function (server) {
     return server.ip == ip
@@ -47,6 +58,41 @@ module.exports = function (socket, ip, serverList, sm) {
     self.nextIndex[server.id] = self.log.length
     self.matchIndex[server.id] = 0
   })
+
+  this.multicast2 = function (func, count, increment, resolve) {
+    var self = this,
+        dfd = q.defer()
+        neighborList = this.serverList.filter(function (server) {return server.id != this.id}, this),
+        qList = []
+
+    count = count || 0
+    increment = increment || function (count) {
+      return 1
+    }
+    resolve = resolve || function (count, list) {
+      return count == list
+    }
+
+    neighborList.forEach(function (server) {
+      qList.push(func.call(self, server.id).then(increment).then(function (yes) {
+        count += yes
+        console.log('count is ' + count)
+        
+        if (resolve(count, neighborList) && dfd) {
+          dfd.resolve()
+          dfd = null
+        }
+      }))
+    })
+
+    q.all(qList).then(function () {
+      console.log('q.all')
+      if (dfd)
+        dfd.reject()
+    })
+
+    return dfd.promise
+  }
 
   this.multicast = function (cb) {
     return q.all(this.serverList.filter(function (server) {
@@ -85,7 +131,7 @@ module.exports = function (socket, ip, serverList, sm) {
 
     if (type != 'ack') {
       var dfd = q.defer()
-      var ackId = parseInt(message.dest_id) + parseInt(message.messageIndex)
+      var ackId = parseInt(message.src_id).toString() + parseInt(message.dest_id).toString() + parseInt(message.messageIndex).toString()
       console.log('storing ack id at ' + ackId)
       this.waitingAcks[ackId] = dfd
       setInterval(function () {
@@ -96,52 +142,53 @@ module.exports = function (socket, ip, serverList, sm) {
     }
   }
 
-  this.isUpToDate = function (term) {
+  this.isUpToDate = function (term, lastLogIndex, lastLogTerm) {
     if (term > this.currentTerm)
       this.role = 'follower'
-    return term >= this.currentTerm
+    
+    if (lastLogIndex && lastLogTerm) {
+      if (this.log[lastLogIndex].term == args.lastLogTerm) {
+        return this.log.length-1 < lastLogIndex
+      }
+      return this.log[lastLogIndex].term < lastLogTerm
+    } else {
+      return this.currentTerm <= term
+    }
   }
 
   this.eventLoop = function () {
     var self = this
     setInterval(function () {
-      var role = self.role
-      if (role == 'follower' || role == 'candidate') {
+      if (self.role == 'follower' || self.role == 'candidate') {
         self.timeSinceLastHeartbeatFromLeader += 1
 
         // So weird, assigning to a variable works
         var time = self.timeSinceLastHeartbeatFromLeader
         var timeout = self.electionTimeout
         if (time > timeout) {
-          console.log('start election')
+          console.log('[ELECTION] start election (' + time + ' > ' + timeout + ')' + ' role => ' + self.role + ' leader => ' + self.leaderId)
           // Restart election
-          self.electionTimeout = Math.floor(Math.random() * 300 + 150) // 150-300 ms
+          self.electionTimeout = determineTimeout()
           self.currentTerm += 1
           self.role = 'candidate'
           self.votes = 1 // Vote for self
           self.voteFor[self.currentTerm] = self.id
           self.leaderId = null
           self.timeSinceLastHeartbeatFromLeader = 0
-          self.multicast(function (server) {
-            return self.requestVote(server.id).then(function (results) {
-              console.log('[REQUESTVOTE] ' + server.id + (results.voteGranted ? '' : ' NOT ') +  ' voted me (' + self.id + ')')
-              if (results.voteGranted)
-                self.votes += 1
 
-              // Majority
-              var votes = self.votes
-              var half = self.serverList.length / 2
-              if (votes > half) {
-                console.log('I won')
-                self.role = 'leader'
-                self.leaderId = self.id
+          self.multicast2(self.requestVote, self.votes, voteGranted, overHalf).then(function () {
+            console.log('I won')
+            self.role = 'leader'
+            self.leaderId = self.id
 
-                self.serverList.forEach(function (server) {
-                  self.nextIndex[server.id] = self.log.length
-                  self.matchIndex[server.id] = 0
-                })
-              }
+            self.serverList.forEach(function (server) {
+              self.nextIndex[server.id] = self.log.length
+              self.matchIndex[server.id] = 0
             })
+
+            self.multicast2(self.heartbeat)
+          }, function () {
+            console.log('I lost')
           })
         }
       }
@@ -149,7 +196,7 @@ module.exports = function (socket, ip, serverList, sm) {
       function updateEntries(serverId) {
         var index = self.nextIndex[serverId],
             entries = self.log.slice(index, index+1)
-        self.appendEntries(serverId, entries).then(function (results) {
+        self._appendEntries(entries, serverId).then(function (results) {
           if (!results.success) {
             // Update term??
             self.nextIndex[serverId] -= 1
@@ -171,15 +218,13 @@ module.exports = function (socket, ip, serverList, sm) {
 
     setInterval(function () {
       if (self.role == 'leader') {
-        // Heartbeat
-        self.multicast(function (server) {
-          return self.appendEntries(server.id)
-        })
+        self.multicast2(self.heartbeat)
       }
     }, self.electionTimeout)
   }
 
-  this.execute = function (index) {
+  // Commitment (also means persistence)
+  this.commit = function (index) {
     var command = this.log[index][0],
         data    = this.log[index][1]
     this.sm[command].apply(this, data)
@@ -204,7 +249,7 @@ module.exports = function (socket, ip, serverList, sm) {
         self.eventLoop()
       } else if (data.type == 'ack') {
         console.log('[ACK] from ' + data.src_id)
-        var ackId = parseInt(data.dest_id) + parseInt(data.messageIndex)
+        var ackId = parseInt(data.dest_id).toString() + parseInt(data.src_id).toString() + parseInt(data.messageIndex).toString()
         var promise = self.waitingAcks[ackId]
         if (promise) {
           console.log('found the promise at ' + ackId)
@@ -228,13 +273,21 @@ module.exports = function (socket, ip, serverList, sm) {
   this.serve = function (command, data) {
     var self = this
 
+    var index = self.log.length
     self.log.push({command: [command, data], term: this.currentTerm, state: 'served'})
+
+    function appended(results) {
+      if (results.success) {
+        self.matchIndex[server.id] = index
+        self.nextIndex[server.id] += 1
+      }
+    }
 
     return self.multicast(function (server) {
       var index = this.nextIndex[server.id],
           entries = this.log.slice(index, index+1)
 
-      return self.appendEntries(server.id, entries).then(function (results) {
+      return self._appendEntries(entries, server.id).then(function (results) {
         if (!results.success) {
           // Update term??
         } else {
@@ -244,12 +297,12 @@ module.exports = function (socket, ip, serverList, sm) {
       })
     }).then(function () {
       // Replicated to all
-      self.execute()
+      self.commit()
     })
   }
 
   // Only invoked by leader
-  this.appendEntries = function (destId, entries) {
+  this._appendEntries = function (entries, destId) {
     return this.rpc(destId, 'appendEntries', {
       term: this.currentTerm,
       leaderId: this.leaderId,
@@ -258,6 +311,17 @@ module.exports = function (socket, ip, serverList, sm) {
       entries: entries || [], // For now entries contain only one entry
       leaderCommit: this.commitIndex,
     })
+  }
+
+  this.appendEntries = function (entries) {
+    var self = this
+    return function (serverId) {
+      return self._appendEntries(entries, serverId)
+    }
+  }
+
+  this.heartbeat = function () {
+    return this.appendEntries([]).apply(this, arguments)
   }
 
   // Only invoked by candidate
@@ -278,9 +342,8 @@ module.exports = function (socket, ip, serverList, sm) {
           return {func: args.func, term: this.currentTerm, success: false}
         }
 
-        if (role == 'candidate') {
-          this.role = 'follower'
-        } 
+        this.role = 'follower'
+        this.timeSinceLastHeartbeatFromLeader = 0
 
         this.leaderId = args.leaderId
         this.commitIndex = args.commitIndex > this.commitIndex ? Math.min(args.commitIndex, this.log.length-1) : this.commitIndex
@@ -296,28 +359,16 @@ module.exports = function (socket, ip, serverList, sm) {
         break
       case 'requestVote':
         console.log('[RPC] requestVote from ' + args.candidateId)
-        if (!this.isUpToDate(args.term)) {
-          console.log('reject because it is not up to date')
-          return {func: args.func, term: this.currentTerm, voteGranted: false}
-        }
-
-        if (!this.voteFor[args.term]) {
-          if (this.log[args.lastLogIndex]) {
-            if (this.log[args.lastLogIndex].term <= args.lastLogTerm) {
-              console.log('accepted because the term of lastLog is equal or higher than me')
-              this.voteFor[args.term] = args.candidateId
-              return {func: args.func, term: this.currentTerm, voteGranted: true}
-            } else {
-              console.log('reject because the term of lastLog is less than me')
-              return {func: args.func, term: this.currentTerm, voteGranted: false}
-            }
-          } else {
-            console.log('accepted because the term of lastLog is equal or higher than me')
-            this.voteFor[args.term] = args.candidateId
-            return {func: args.func, term: this.currentTerm, voteGranted: true}
+        if (this.isUpToDate(args.term, args.lastLogIndex, args.lastLogTerm)) {
+          if (this.voteFor[args.term]) {
+            console.log('vote rejected because already voted')
+            return {func: args.func, term: this.currentTerm, voteGranted: false}
           }
+
+          console.log('vote granted because it is up to date')
+          return {func: args.func, term: this.currentTerm, voteGranted: true}
         } else {
-          console.log('reject because the I have already voted')
+          console.log('vote rejected because it is not up to date')
           return {func: args.func, term: this.currentTerm, voteGranted: false}
         }
         break
