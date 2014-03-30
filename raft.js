@@ -143,7 +143,7 @@ module.exports = function (socket, ip, initial, sm) {
   // Persistent state on all servers
   this.role = 'follower' // [follower, candidate, leader]
   this.currentTerm = 0
-  this.log = [] // Three states: served -> executed, TODO: should be loaded from persistence (for now firebase)
+  this.log = [] // TODO: should be loaded from persistence (for now firebase)
   this.socket = socket
   this.configuration = new Configuration(latestConfiguration(this.log) || initial || [ip]) // Configuration
   this.serverId = null // Current server id
@@ -341,6 +341,12 @@ module.exports = function (socket, ip, initial, sm) {
   this.eventLoop = function () {
     var self = this
     setInterval(function () {
+      // commitIndex is the highest index known to be committed
+      // lastApplied is the highest index applied to local state machine
+      if (self.commitIndex > self.lastApplied) {
+        self.commit(self.lastApplied+1, 1)
+      }
+
       // Can only requestVote if it is included in the current configuration
       if ((self.role == 'follower' || self.role == 'candidate') 
           && self.configuration.servers().indexOf(self.id) > -1) {
@@ -385,6 +391,21 @@ module.exports = function (socket, ip, initial, sm) {
       }
 
       if (self.role == 'leader') {
+        function updateCommitIndex(N) {
+          console.log('updateCommitIndex')
+          var count = 0
+          Object.keys(self.matchIndex).forEach(function (serverId) {
+            if (self.matchIndex[serverId] >= N) {
+              count += 1
+            }
+          })
+
+          if (count > Object.keys(self.matchIndex).length / 2 && self.log[N].term == self.currentTerm) {
+            self.commitIndex = N
+          }
+        }
+        updateCommitIndex(self.commitIndex + 1)
+
         Object.keys(self.nextIndex).forEach(function (serverId) {
           if (self.log.length-1 >= self.nextIndex[serverId])
             console.log('[UPDATE]')
@@ -402,13 +423,15 @@ module.exports = function (socket, ip, initial, sm) {
   }
 
   // TODO: Commit to STM (also persistence)
-  this.commit = function (index) {
-    var command = this.log[index][0],
-        data    = this.log[index][1]
-    this.sm[command].apply(this, data)
-    this.log[index].state = 'executed'
-    this.commitIndex = this.commitIndex < index ? index : this.commitIndex
-    this.lastApplied = index
+  this.commit = function (index, length) {
+    var self = this,
+        entries = this.log.slice(index, index+length)
+    entries.forEach(function (entry, offset) {
+      if (entry.command == 'request') {
+        self.sm[entry.data[0]].apply(self, entry.data[1])
+        self.lastApplied = index + offset
+      }
+    })
   }
 
   this.leader = function () {
@@ -461,7 +484,6 @@ module.exports = function (socket, ip, initial, sm) {
         command: 'configuration',
         data: self.configuration.toObject(),
         term: self.currentTerm,
-        state: 'executed'
       }]
       self.log.concat(entries)
       self.replicateToMajority(entries, prevLogIndex)
@@ -473,7 +495,6 @@ module.exports = function (socket, ip, initial, sm) {
             command: 'configuration',
             data: self.configuration.toObject(),
             term: self.currentTerm,
-            state: 'executed'
           }]
           prevLogIndex = self.log.length-1
           self.log.concat(entries)
@@ -485,11 +506,11 @@ module.exports = function (socket, ip, initial, sm) {
           })
         })
     } else {
-      entries = [{command: [command, data], term: self.currentTerm, state: 'served'}]
+      entries = [{command: 'request', data: [command, data], term: self.currentTerm}]
       self.log.concat(entries)
       return self.replicateToMajority(entries, prevLogIndex)
         .then(function () {
-          self.commit(entries, prevLogIndex+1)
+          self.commit(prevLogIndex+1, entries.length)
         })
     }
   }
@@ -547,7 +568,7 @@ module.exports = function (socket, ip, initial, sm) {
         this.timeSinceLastHeartbeatFromLeader = 0
 
         this.leaderId = args.leaderId
-        this.commitIndex = args.leaderCommit > this.commitIndex ? Math.min(args.commitIndex, this.log.length-1) : this.commitIndex
+        this.commitIndex = args.leaderCommit > this.commitIndex ? Math.min(args.leaderCommit, this.log.length-1) : this.commitIndex
 
         var newLogIndex = args.prevLogIndex+1
         if (this.log[newLogIndex] && this.log[newLogIndex].term != args.entries[0].term) {
