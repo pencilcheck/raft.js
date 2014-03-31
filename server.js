@@ -15,10 +15,11 @@ var RaftServer      = require('./raft.js'),
       'http://localhost:5004'],
     STM             = require('./sm.js'),
     sm              = new STM(),
-    socketUrl       = 'ws://localhost:3000/',
+    socketUrl       = 'ws://tab-sync-websocket-server.herokuapp.com',
+    //socketUrl       = 'ws://localhost:3000',
     ws              = new WebSocket.Client(socketUrl),
-    raftServer      = new RaftServer(ws, 'http://localhost:' + port, serverList, sm),
-    debug           = process.argv.indexOf('--debug') > -1 && process.argv[process.argv.indexOf('--debug')+1] || false
+    raftServer      = new RaftServer(ws, 'http://localhost:' + port, null, sm),
+    debug           = process.argv.indexOf('--debug') > -1 && process.argv[process.argv.indexOf('--debug')+1] || true
 
 app.use(express.static(__dirname + '/'))
 
