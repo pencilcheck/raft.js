@@ -3,9 +3,9 @@ var moment = require('moment')
 module.exports = function () {
   this.states = []
 
-  this.push = function (snapshot, name) {
+  this.push = function (snapshot, name, lastChanged) {
     var timestamp = moment(new Date())
-    this.states.push({timestamp: timestamp, snapshot: snapshot, name: (name || timestamp.format('LLLL'))})
+    this.states.push({timestamp: timestamp, lastChanged: lastChanged, snapshot: snapshot, name: (name || timestamp.format('MMMM Do YYYY, h:mm:ss a'))})
   }
 
   this.get = function (name) {
