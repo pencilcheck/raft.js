@@ -32,6 +32,22 @@ function redirectToLeader(res, url) {
 
 app.use(express.bodyParser());
 
+app.get('/', function (req, res) {
+  if (raftServer.role == 'leader') {
+    res.send(JSON.stringify(raftServer.sm.current()))
+  } else {
+    redirectToLeader(res, raftServer.leader() + req.path)
+  }
+})
+
+app.get('/list', function (req, res) {
+  if (raftServer.role == 'leader') {
+    res.send(JSON.stringify(raftServer.sm.states))
+  } else {
+    redirectToLeader(res, raftServer.leader() + req.path)
+  }
+})
+
 app.post('/', function (req, res) {
   if (raftServer.role == 'leader') {
     raftServer.serve(req.param('command'), req.param('data'))

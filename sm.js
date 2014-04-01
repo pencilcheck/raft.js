@@ -1,46 +1,24 @@
-function Window(tabs) {
-  this.tabs = tabs || [] // Ordered list, Left to right
-}
-
-function Tab(url) {
-  this.url = url
-}
+var moment = require('moment')
 
 module.exports = function () {
-  this.windows = []
-  this.activeWindowId = 0
+  this.states = []
 
-  this.openTab = function (url, windowId) {
-    var index = typeof windowId != 'undefined' ? windowId : this.activeWindowId
-    if (!this.windows[index]) {
-      this.openWindow()
-      index = this.windows.length-1
-    }
-    this.windows[index].push(new Tab(url))
+  this.push = function (snapshot, name) {
+    var timestamp = moment(new Date())
+    this.states.push({timestamp: timestamp, snapshot: snapshot, name: (name || timestamp.format('LLLL'))})
   }
 
-  this.insertTab = function (url, windowId, index) {
-    this.windows[windowId].splice(index, 1, new Tab(url))
+  this.get = function (name) {
+    var result = {}
+    this.states.forEach(function (state) {
+      if (state.name == name) {
+        result = state
+      }
+    })
+    return result
   }
 
-  this.modifyTab = function (url, tabId, windowId) {
-    this.windows[windowId][tabId].url = url
-  }
-
-  this.closeTab = function (tabId, windowId) {
-    this.windows[windowId].splice(tabId, 1)
-  }
-
-  this.openWindow = function () {
-    this.windows.push(new Window())
-    return this.windows.length-1
-  }
-
-  this.closeWindow = function (windowId) {
-    this.windows.splice(windowId, 1)
-  }
-
-  this.getWindows = function () {
-    return this.windows
+  this.current = function () {
+    return this.states[this.states.length-1] ? this.states[this.states.length-1] : {}
   }
 }
