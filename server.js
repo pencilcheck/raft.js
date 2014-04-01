@@ -34,15 +34,7 @@ app.use(express.bodyParser());
 
 app.get('/', function (req, res) {
   if (raftServer.role == 'leader') {
-    res.send(JSON.stringify(raftServer.sm.current()))
-  } else {
-    redirectToLeader(res, raftServer.leader() + req.path)
-  }
-})
-
-app.get('/list', function (req, res) {
-  if (raftServer.role == 'leader') {
-    res.send(JSON.stringify(raftServer.sm.states))
+    res.send(JSON.stringify(raftServer.sm.get(req.param('revision'))))
   } else {
     redirectToLeader(res, raftServer.leader() + req.path)
   }
